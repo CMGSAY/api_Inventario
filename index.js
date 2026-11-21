@@ -5,6 +5,7 @@ const cors = require('cors');
 const productosRoutes = require('./routes/productos');
 const inventarioRoutes = require('./routes/inventario');
 const ordenesRoutes = require('./routes/ordenes');
+const { swaggerSpec, swaggerHtml } = require('./swagger');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -17,7 +18,18 @@ app.get('/', (req, res) => {
   res.status(200).json({
     status: 'ok',
     message: 'API de Inventario y Pedidos funcionando',
+    swagger: '/api-docs',
   });
+});
+
+// Documentación interactiva Swagger UI (/api-docs y /swagger)
+app.get('/swagger.json', (req, res) => {
+  res.status(200).json(swaggerSpec);
+});
+
+app.get(['/api-docs', '/swagger'], (req, res) => {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.status(200).send(swaggerHtml);
 });
 
 // Rutas de la API
@@ -41,4 +53,5 @@ app.use((err, req, res, next) => {
 
 app.listen(PORT, () => {
   console.log(`Servidor corriendo en http://localhost:${PORT}`);
+  console.log(`Swagger UI disponible en http://localhost:${PORT}/api-docs`);
 });
