@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const supabase = require('../supabaseClient');
+const { parseEntero, parseNumero } = require('../validaciones');
 
 // GET /api/inventario - Lista el inventario activo con datos del producto relacionado
 router.get('/', async (req, res) => {
@@ -50,16 +51,23 @@ router.post('/', async (req, res) => {
       });
     }
 
-    const existenciaNum = Number(existencia);
-    const precioNum = Number(precio);
+    const productoidNum = parseEntero(productoid);
+    const existenciaNum = parseEntero(existencia);
+    const precioNum = parseNumero(precio);
 
-    if (!Number.isInteger(existenciaNum) || existenciaNum < 0) {
+    if (productoidNum === null || productoidNum <= 0) {
+      return res.status(400).json({
+        error: 'productoid debe ser un número entero mayor a 0',
+      });
+    }
+
+    if (existenciaNum === null || existenciaNum < 0) {
       return res.status(400).json({
         error: 'existencia debe ser un número entero mayor o igual a 0',
       });
     }
 
-    if (Number.isNaN(precioNum) || precioNum < 0) {
+    if (precioNum === null || precioNum < 0) {
       return res.status(400).json({
         error: 'precio debe ser un número mayor o igual a 0',
       });
@@ -69,7 +77,7 @@ router.post('/', async (req, res) => {
     const { data: producto, error: prodError } = await supabase
       .from('producto')
       .select('productoid')
-      .eq('productoid', productoid)
+      .eq('productoid', productoidNum)
       .eq('activo', true)
       .maybeSingle();
 
@@ -79,12 +87,12 @@ router.post('/', async (req, res) => {
 
     if (!producto) {
       return res.status(404).json({
-        error: `No se encontró un producto activo con productoid ${productoid}`,
+        error: `No se encontró un producto activo con productoid ${productoidNum}`,
       });
     }
 
     const nuevoRegistro = {
-      productoid: Number(productoid),
+      productoid: productoidNum,
       existencia: existenciaNum,
       precio: Number(precioNum.toFixed(2)),
       activo: true,
@@ -142,8 +150,8 @@ router.put('/:id', async (req, res) => {
     };
 
     if (existencia !== undefined) {
-      const existenciaNum = Number(existencia);
-      if (!Number.isInteger(existenciaNum) || existenciaNum < 0) {
+      const existenciaNum = parseEntero(existencia);
+      if (existenciaNum === null || existenciaNum < 0) {
         return res.status(400).json({
           error: 'existencia debe ser un número entero mayor o igual a 0',
         });
@@ -152,8 +160,8 @@ router.put('/:id', async (req, res) => {
     }
 
     if (precio !== undefined) {
-      const precioNum = Number(precio);
-      if (Number.isNaN(precioNum) || precioNum < 0) {
+      const precioNum = parseNumero(precio);
+      if (precioNum === null || precioNum < 0) {
         return res.status(400).json({
           error: 'precio debe ser un número mayor o igual a 0',
         });

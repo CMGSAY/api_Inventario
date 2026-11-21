@@ -309,6 +309,9 @@ const swaggerSpec = {
           404: {
             description: 'Orden no encontrada',
           },
+          409: {
+            description: 'La orden ya fue procesada por otra petición o el inventario cambió',
+          },
         },
       },
     },
@@ -334,6 +337,9 @@ const swaggerSpec = {
           },
           404: {
             description: 'Orden no encontrada',
+          },
+          409: {
+            description: 'La orden ya fue procesada por otra petición o el inventario cambió',
           },
         },
       },

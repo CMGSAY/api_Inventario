@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const supabase = require('../supabaseClient');
+const { validarTexto } = require('../validaciones');
 
 // GET /api/productos - Lista todos los productos activos
 router.get('/', async (req, res) => {
@@ -27,10 +28,13 @@ router.post('/', async (req, res) => {
   try {
     const { codigo, nombre, descripcion } = req.body;
 
-    if (!codigo || !nombre || !descripcion) {
-      return res.status(400).json({
-        error: 'Los campos codigo, nombre y descripcion son obligatorios',
-      });
+    const errorValidacion =
+      validarTexto(codigo, 'codigo', 20) ||
+      validarTexto(nombre, 'nombre', 100) ||
+      validarTexto(descripcion, 'descripcion', 300);
+
+    if (errorValidacion) {
+      return res.status(400).json({ error: errorValidacion });
     }
 
     const nuevoProducto = {

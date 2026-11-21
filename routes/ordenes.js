@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const supabase = require('../supabaseClient');
+const { parseEntero, validarTexto } = require('../validaciones');
 
 // GET /api/ordenes - Lista todas las órdenes activas con sus detalles y producto asociado
 router.get('/', async (req, res) => {
@@ -56,8 +57,19 @@ router.post('/', async (req, res) => {
   try {
     const { cliente, numeroorden, detalles } = req.body;
 
-    if (!cliente || !String(cliente).trim()) {
-      return res.status(400).json({ error: 'El campo cliente es obligatorio' });
+    const errorCliente = validarTexto(cliente, 'cliente', 100);
+    if (errorCliente) {
+      return res.status(400).json({ error: errorCliente });
+    }
+
+    if (
+      numeroorden !== undefined &&
+      numeroorden !== null &&
+      String(numeroorden).trim().length > 20
+    ) {
+      return res.status(400).json({
+        error: 'El campo numeroorden no puede superar 20 caracteres',
+      });
     }
 
     if (!Array.isArray(detalles) || detalles.length === 0) {
@@ -66,18 +78,20 @@ router.post('/', async (req, res) => {
       });
     }
 
+    const detallesNormalizados = [];
     for (const item of detalles) {
-      const invId = Number(item.inventarioid);
-      const cant = Number(item.cantidad);
-      if (!Number.isInteger(invId) || invId <= 0 || !Number.isInteger(cant) || cant <= 0) {
+      const invId = item && typeof item === 'object' ? parseEntero(item.inventarioid) : null;
+      const cant = item && typeof item === 'object' ? parseEntero(item.cantidad) : null;
+      if (invId === null || invId <= 0 || cant === null || cant <= 0) {
         return res.status(400).json({
           error: 'Cada detalle debe incluir inventarioid y cantidad enteros mayores a 0',
         });
       }
+      detallesNormalizados.push({ inventarioid: invId, cantidad: cant });
     }
 
     // Consultar precios actuales de los inventarioid solicitados
-    const inventarioIds = [...new Set(detalles.map((d) => Number(d.inventarioid)))];
+    const inventarioIds = [...new Set(detallesNormalizados.map((d) => d.inventarioid))];
 
     const { data: inventarios, error: invError } = await supabase
       .from('inventario')
@@ -97,9 +111,9 @@ router.post('/', async (req, res) => {
     let totalOrden = 0;
     const detallesPreparados = [];
 
-    for (const item of detalles) {
-      const invId = Number(item.inventarioid);
-      const cantidad = Number(item.cantidad);
+    for (const item of detallesNormalizados) {
+      const invId = item.inventarioid;
+      const cantidad = item.cantidad;
       const inv = inventarioMap.get(invId);
 
       if (!inv) {
@@ -157,6 +171,8 @@ router.post('/', async (req, res) => {
       .select();
 
     if (detError) {
+      // Revertir la orden para no dejar una orden sin detalles
+      await supabase.from('orden').delete().eq('ordenid', ordenCreada.ordenid);
       return res.status(500).json({ error: detError.message });
     }
 
@@ -260,21 +276,70 @@ router.put('/:id/despachar', async (req, res) => {
     const ahora = new Date().toISOString();
     const alertasStockBajo = [];
 
-    // Descontar existencias en inventario y recolectar alertas si queda < 5
+    // 1) "Reclamar" la orden: solo cambia si sigue Pendiente.
+    //    Evita que dos peticiones simultáneas despachen la misma orden dos veces.
+    const { data: ordenActualizada, error: updateOrdenError } = await supabase
+      .from('orden')
+      .update({
+        estado: 'Despachada',
+        fechamod: ahora,
+      })
+      .eq('ordenid', id)
+      .eq('estado', 'Pendiente')
+      .select()
+      .maybeSingle();
+
+    if (updateOrdenError) {
+      return res.status(500).json({ error: updateOrdenError.message });
+    }
+
+    if (!ordenActualizada) {
+      return res.status(409).json({
+        error: 'La orden ya fue procesada por otra petición',
+      });
+    }
+
+    // 2) Descontar existencias. Cada update solo aplica si la existencia no cambió
+    //    desde que se leyó (control de concurrencia optimista).
+    const aplicados = [];
+    const revertir = async () => {
+      for (const a of aplicados) {
+        await supabase
+          .from('inventario')
+          .update({ existencia: a.existenciaActual, fechamod: ahora })
+          .eq('inventarioid', a.inventarioid);
+      }
+      await supabase
+        .from('orden')
+        .update({ estado: 'Pendiente', fechamod: ahora })
+        .eq('ordenid', id);
+    };
+
     for (const item of requeridos.values()) {
       const nuevaExistencia = item.existenciaActual - item.cantidadTotal;
 
-      const { error: updateInvError } = await supabase
+      const { data: invActualizado, error: updateInvError } = await supabase
         .from('inventario')
         .update({
           existencia: nuevaExistencia,
           fechamod: ahora,
         })
-        .eq('inventarioid', item.inventarioid);
+        .eq('inventarioid', item.inventarioid)
+        .eq('existencia', item.existenciaActual)
+        .select('inventarioid')
+        .maybeSingle();
 
-      if (updateInvError) {
-        return res.status(500).json({ error: updateInvError.message });
+      if (updateInvError || !invActualizado) {
+        await revertir();
+        if (updateInvError) {
+          return res.status(500).json({ error: updateInvError.message });
+        }
+        return res.status(409).json({
+          error: `La existencia de "${item.nombreProducto}" cambió durante el despacho. Intenta de nuevo.`,
+        });
       }
+
+      aplicados.push(item);
 
       if (nuevaExistencia < 5) {
         alertasStockBajo.push({
@@ -283,21 +348,6 @@ router.put('/:id/despachar', async (req, res) => {
           existenciaActual: nuevaExistencia,
         });
       }
-    }
-
-    // Cambiar estado de la orden a Despachada
-    const { data: ordenActualizada, error: updateOrdenError } = await supabase
-      .from('orden')
-      .update({
-        estado: 'Despachada',
-        fechamod: ahora,
-      })
-      .eq('ordenid', id)
-      .select()
-      .single();
-
-    if (updateOrdenError) {
-      return res.status(500).json({ error: updateOrdenError.message });
     }
 
     res.status(200).json({
@@ -347,11 +397,18 @@ router.put('/:id/rechazar', async (req, res) => {
         fechamod: new Date().toISOString(),
       })
       .eq('ordenid', id)
+      .eq('estado', 'Pendiente')
       .select()
-      .single();
+      .maybeSingle();
 
     if (updateError) {
       return res.status(500).json({ error: updateError.message });
+    }
+
+    if (!ordenActualizada) {
+      return res.status(409).json({
+        error: 'La orden ya fue procesada por otra petición',
+      });
     }
 
     res.status(200).json({
